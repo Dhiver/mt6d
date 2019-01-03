@@ -1,0 +1,31 @@
+# example config
+
+internalNic: enp0s25
+externalNic: enp0s42
+consoleLog: true
+logFile: ""
+logVerbose: true
+hashAlgorithm: sha256
+cryptAlgorithm: aes256
+regenInterval: 1000
+regenWindow: 500
+firewall: true
+encryption: false
+randSource: ""
+rangeInterval: 10
+minimumRotationTime: 5
+
+
+profiles:
+  profile1:
+    srcHost: host1
+    dstHost: host2
+    sessionKey: aGV5IHRoZXJlIQ==
+
+ethers:
+  fe80::e035:3698:cf2e:78c1: 42:42:42:42:42:ca
+  fe80::e035:3698:cf2e:78c2: 42:42:42:42:42:cb
+
+users:
+  host1: fe80::e035:3698:cf2e:78c1/64
+  host2: fe80::e035:3698:cf2e:78c2/64
