@@ -1,10 +1,27 @@
 # example config
 
-internalNic: enp0s25
-externalNic: enp0s42
-consoleLog: true
 logFile: ""
 logVerbose: true
+
+profiles:
+  home:
+    srcHost: vm
+    dstHost: rasp
+    sessionKey: aGV5IHRoZXJlIQ==
+
+ethers:
+  2a01:aaaa:aaaa:aaaa::1: 42:42:42:42:42:42
+  2a01:aaaa:aaaa:aaaa::2: 42:42:42:42:42:43
+
+hostnames:
+  rasp: 2a01:aaaa:aaaa:aaaa::1/64
+  vm: 2a01:aaaa:aaaa:aaaa::2/64
+
+internalNic: tun42
+rotationTime: 10
+externalNic: enp0s3
+
+# unused for now
 hashAlgorithm: sha256
 cryptAlgorithm: aes256
 regenInterval: 1000
@@ -12,20 +29,3 @@ regenWindow: 500
 firewall: true
 encryption: false
 randSource: ""
-rangeInterval: 10
-minimumRotationTime: 5
-
-
-profiles:
-  profile1:
-    srcHost: host1
-    dstHost: host2
-    sessionKey: aGV5IHRoZXJlIQ==
-
-ethers:
-  fe80::e035:3698:cf2e:78c1: 42:42:42:42:42:ca
-  fe80::e035:3698:cf2e:78c2: 42:42:42:42:42:cb
-
-users:
-  host1: fe80::e035:3698:cf2e:78c1/64
-  host2: fe80::e035:3698:cf2e:78c2/64
