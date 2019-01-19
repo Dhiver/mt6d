@@ -63,7 +63,18 @@ This technology operates at the network layer level.
 
 ### [Protocol Specifications](protocol.md)
 
-<!-- ### [Software Implementation](softwareImplementation.md) -->
+### Architecture
+
+![MT6D Components](MT6DComponents.png)
+
+1. The main MT6D routine reads the configuration and launches the next three routines.
+2. The rehash routine computes and binds the obscured addresses.
+3. The ICMP routine handles ICMPv6 traffic that is not processed by stream routines.
+4. The stream routines handle all packets that are part of the MT6D tunnel.
+5. Netlink is used to manipulate the network stack (E.g. set an IP address to an interface).
+6. Nftables is used to set firewall rules (E.g. redirect specific traffic to Netfilter queues).
+7. Netfilter queues are used to process packets in userspace.
+8. Packets are read and sent to network interfaces
 
 ### Limits
 
