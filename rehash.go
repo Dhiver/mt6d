@@ -6,13 +6,11 @@ import (
 	"net"
 	"time"
 
-	"github.com/vishvananda/netlink"
-
 	"github.com/google/logger"
-	"github.com/google/nftables/expr"
-	"golang.org/x/sys/unix"
-
 	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -21,11 +19,6 @@ var (
 	// Yes, this can be improved, but the package github.com/google/nftables needs to be improved for that (we should be able to get the rule handle after insertion)
 	RuleHandleNum = uint64(2)
 )
-
-func rehash() {
-	time.Sleep(2 * time.Second)
-	fmt.Printf("new rehash addr generated\n")
-}
 
 type nftMt6d struct {
 	conn       *nftables.Conn
@@ -90,6 +83,11 @@ func (n *nftMt6d) insertIcmpv6Rule(qn uint16) error {
 	return err
 }
 
+func (n *nftMt6d) delete() error {
+	n.conn.DelTable(n.table)
+	return n.conn.Flush()
+}
+
 func (n *nftMt6d) redirectToQ(srcIP, dstIP net.IP, qn uint16) error {
 	// Add nftables rule that redirects all traffic from the local host's true address to the remote host's true address into that stream's netfilter queue.
 	// nft --debug all insert rule ip6 mt6d input ip6 saddr <stream source> ip6 daddr <stream destination> counter queue num <stream queue>
@@ -125,7 +123,7 @@ func (n *nftMt6d) redirectToQ(srcIP, dstIP net.IP, qn uint16) error {
 			},
 			// counter pkts 0 bytes 0
 			&expr.Counter{},
-			// queue num 2
+			// queue num x
 			&expr.Queue{
 				Num: qn,
 			},
@@ -191,8 +189,8 @@ func rehashRoutine(ctx context.Context, nftc *nftables.Conn, streams *Streams) {
 
 		for sn, s := range *streams {
 			if isInitialRun {
-				if err := s.Setup(intNetlk, nft); err != nil {
-					logger.Fatalf("could not setup stream %s: %s", sn, err)
+				if err := s.Init(intNetlk, nft); err != nil {
+					logger.Fatalf("could not init stream %s: %s", sn, err)
 				}
 			} else {
 				logger.Infof("I garbage collect old routes\n")
@@ -214,6 +212,16 @@ func rehashRoutine(ctx context.Context, nftc *nftables.Conn, streams *Streams) {
 		// Wait until rotation time has expired or context done
 		select {
 		case <-ctx.Done():
+			logger.Infof("cleaning active routes...\n")
+			for n, s := range *streams {
+				if err := s.Flush(extNetlk, nft); err != nil {
+					logger.Fatalf("could not flush all routes for stream %s: %s", n, err)
+				}
+			}
+			logger.Infof("cleaning nftables mt6d table...\n")
+			if err := nft.delete(); err != nil {
+				logger.Fatalf("could not delete mt6d table: %s\n", err)
+			}
 			logger.Infof("Exiting rehash routine\n")
 			return
 		case <-time.After(time.Duration(rotationTime) * time.Second):

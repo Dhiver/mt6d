@@ -10,6 +10,8 @@ import (
 	"net"
 	"time"
 
+	netfilter "github.com/AkihiroSuda/go-netfilter-queue"
+	"github.com/google/gopacket/layers"
 	"github.com/google/logger"
 	"github.com/vishvananda/netlink"
 )
@@ -35,9 +37,25 @@ func (rs *Routes) Active() Route {
 	return rs.Head.Front().Next().Value.(Route)
 }
 
+func (rs *Routes) Dump() {
+	fmt.Printf("ACTIVE routes: ")
+	for e := rs.Head.Front(); e != nil; e = e.Next() {
+		r := e.Value.(*Route)
+		fmt.Printf("%v - ", *r)
+	}
+	fmt.Printf("\nEXPIRED routes: ")
+	for e := rs.Expired.Front(); e != nil; e = e.Next() {
+		r := e.Value.(*Route)
+		fmt.Printf("%v - ", *r)
+	}
+	fmt.Printf("\n")
+}
+
 // MoveExpiredRoutes moves expired routes from the Head list to the Expired list
 func (rs *Routes) MoveExpiredRoutes() {
-	for e := rs.Head.Back(); e != nil; e = e.Prev() {
+	var prev *list.Element
+	for e := rs.Head.Back(); e != nil; e = prev {
+		prev = e.Prev()
 		r := e.Value.(*Route)
 		if r.IsExpired() {
 			rs.Head.Remove(e)
@@ -68,7 +86,7 @@ type Stream struct {
 	//idkg       Idkg
 }
 
-func (s *Stream) Setup(nlk netlink.Link, nft *nftMt6d) error {
+func (s *Stream) Init(nlk netlink.Link, nft *nftMt6d) error {
 	// bind stream real dst addr to internal NIC
 	netlkAddr, err := netlink.ParseAddr(fmt.Sprintf("%s/64", s.DstIPAddr.IP.String()))
 	if err != nil {
@@ -93,9 +111,11 @@ func (s *Stream) Setup(nlk netlink.Link, nft *nftMt6d) error {
 }
 
 func (s *Stream) CleanOldRoutes(extNlk netlink.Link, nft *nftMt6d) error {
-	for e := s.Routes.Expired.Back(); e != nil; e = e.Prev() {
-		r := e.Value.(*Route)
+	var prev *list.Element
+	for e := s.Routes.Expired.Back(); e != nil; e = prev {
+		prev = e.Prev()
 
+		r := e.Value.(*Route)
 		logger.Infof("This route is expired and to be removed: %+v\n", r)
 
 		logger.Infof("Deleting rule via handle num %d\n", r.RuleHandle)
@@ -175,5 +195,76 @@ func (s *Stream) Mutate(inNlk, extNlk netlink.Link, nft *nftMt6d, salt, rt int64
 type Streams map[string]Stream
 
 func (s *Stream) Handle(ctx context.Context) {
-	logger.Infof("I handle a stream !\n")
+	defer wg.Done()
+
+	// TODO: Init structs
+	// TODO: Open UDP socket for external comms
+	// TODO: Bind to netfilter queue
+
+	streamNfq, err := netfilter.NewNFQueue(s.Nfqid, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
+	if err != nil {
+		logger.Fatalf("could not get netfilter queue: %s", err)
+	}
+	//defer streamNfq.Close() // Doesn't return.... ?
+
+	pkts := streamNfq.GetPackets()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Infof("Exiting stream routine\n")
+			return
+		case p := <-pkts:
+			handleStreamPkt(p, s)
+		}
+	}
+
+}
+
+// Flush clean all routes. There expiration time is set to 0 and CleanOldRoutes is called.
+func (s *Stream) Flush(extNlk netlink.Link, nft *nftMt6d) error {
+	// Set all active route expiration time to 0
+	for e := s.Routes.Head.Back(); e != nil; e = e.Prev() {
+		r := e.Value.(*Route)
+		r.ExpirationTime = time.Time{}
+	}
+	s.Routes.MoveExpiredRoutes()
+	return s.CleanOldRoutes(extNlk, nft)
+}
+
+func handleStreamPkt(p netfilter.NFPacket, s *Stream) {
+	// TODO: determine the direction of the packet
+	ip6Layer := p.Packet.Layer(layers.LayerTypeIPv6)
+	if ip6Layer == nil {
+		p.SetVerdict(netfilter.NF_DROP)
+		return
+	}
+	ip6Pkt, _ := ip6Layer.(*layers.IPv6)
+
+	if ip6Pkt.SrcIP.Equal(s.SrcIPAddr.IP) && ip6Pkt.DstIP.Equal(s.DstIPAddr.IP) { // inbound
+		logger.Infof("Inbound traffic from %s to %s\n", ip6Pkt.SrcIP.String(), ip6Pkt.DstIP.String())
+		logger.Infof("Packet is: %v", p.Packet)
+		// Check packet size to see if > MT6D MTU
+		if p.Packet.Metadata().Length > MTU {
+			// TODO: Send ICMPv6 "too big message"
+
+			p.SetVerdict(netfilter.NF_DROP)
+			return
+		}
+
+		// TODO: decaps and send to internal interface
+		//payload := p.Packet.ApplicationLayer()
+
+		// - TODO: decode packet
+		// - TODO: send
+		//n, err := intIfce.Write()
+	} else { // outbound
+		logger.Infof("Outbound traffic from %s to %s\n", ip6Pkt.SrcIP.String(), ip6Pkt.DstIP.String())
+		logger.Infof("Packet is: %v", p.Packet)
+		// TODO: encaps and send to external interface
+	}
+
+	p.SetVerdict(netfilter.NF_DROP)
+	//newPkt := []byte{}
+	//p.SetVerdictWithPacket(netfilter.NF_ACCEPT, newPkt)
 }

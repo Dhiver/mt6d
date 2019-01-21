@@ -65,6 +65,8 @@ This technology operates at the network layer level.
 
 ### Architecture
 
+MT6D components representation:
+
 ![MT6D Components](MT6DComponents.png)
 
 1. The main MT6D routine reads the configuration and launches the next three routines.

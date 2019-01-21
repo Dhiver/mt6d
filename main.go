@@ -27,6 +27,8 @@ var (
 	wg      sync.WaitGroup
 	config  *viper.Viper
 	intIfce *water.Interface
+
+	MTU = 1400
 )
 
 func initStreams() (*Streams, error) {
@@ -155,6 +157,7 @@ func main() {
 	for k, s := range *streams {
 		logger.Infof("starting handler for stream: %s", k)
 		go s.Handle(ctx)
+		wg.Add(1)
 	}
 
 	// wait for termination signal
