@@ -17,13 +17,14 @@ var (
 	// RuleHandleNum maintains a global counter in order to identify the next rule handle number that will be assigned to the next rule
 	// Each time that a rule is inserted, this variable must be incremented
 	// Yes, this can be improved, but the package github.com/google/nftables needs to be improved for that (we should be able to get the rule handle after insertion)
-	RuleHandleNum = uint64(2)
+	RuleHandleNum = uint64(3)
 )
 
 type nftMt6d struct {
-	conn       *nftables.Conn
-	table      *nftables.Table
-	inputChain *nftables.Chain
+	conn        *nftables.Conn
+	table       *nftables.Table
+	inputChain  *nftables.Chain
+	outputChain *nftables.Chain
 }
 
 func newNftMt6d(nftc *nftables.Conn) (*nftMt6d, error) {
@@ -31,17 +32,25 @@ func newNftMt6d(nftc *nftables.Conn) (*nftMt6d, error) {
 		Family: nftables.TableFamilyIPv6,
 		Name:   "mt6d",
 	})
-	chain := nftc.AddChain(&nftables.Chain{
+	inChain := nftc.AddChain(&nftables.Chain{
 		Name:     "input",
 		Table:    table,
 		Priority: nftables.ChainPriorityFilter,
 		Hooknum:  nftables.ChainHookInput,
 		Type:     nftables.ChainTypeFilter,
 	})
+	outChain := nftc.AddChain(&nftables.Chain{
+		Name:     "output",
+		Table:    table,
+		Priority: nftables.ChainPriorityFilter,
+		Hooknum:  nftables.ChainHookOutput,
+		Type:     nftables.ChainTypeFilter,
+	})
 	return &nftMt6d{
-		conn:       nftc,
-		table:      table,
-		inputChain: chain,
+		conn:        nftc,
+		table:       table,
+		inputChain:  inChain,
+		outputChain: outChain,
 	}, nftc.Flush()
 }
 
@@ -88,12 +97,12 @@ func (n *nftMt6d) delete() error {
 	return n.conn.Flush()
 }
 
-func (n *nftMt6d) redirectToQ(srcIP, dstIP net.IP, qn uint16) error {
+func (n *nftMt6d) redirectToQ(srcIP, dstIP net.IP, qn uint16, nftChain *nftables.Chain) error {
 	// Add nftables rule that redirects all traffic from the local host's true address to the remote host's true address into that stream's netfilter queue.
 	// nft --debug all insert rule ip6 mt6d input ip6 saddr <stream source> ip6 daddr <stream destination> counter queue num <stream queue>
 	n.conn.AddRule(&nftables.Rule{
 		Table: n.table,
-		Chain: n.inputChain,
+		Chain: nftChain,
 		Exprs: []expr.Any{
 			// payload load 16b @ network header + 8 => reg 1
 			&expr.Payload{
@@ -136,18 +145,18 @@ func (n *nftMt6d) redirectToQ(srcIP, dstIP net.IP, qn uint16) error {
 	return err
 }
 
-func (n *nftMt6d) deleteRule(handle uint64) error {
+func (n *nftMt6d) deleteRule(handle uint64, nfqChain *nftables.Chain) error {
 	// nft --debug all delete rule ip6 mt6d input handle <handle>
 	n.conn.DelRule(&nftables.Rule{
 		Table: n.table,
-		Chain: n.inputChain,
+		Chain: nfqChain,
 	}, handle)
 
 	return n.conn.Flush()
 }
 
 func computeSalt(rt int64, offset int64) int64 {
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	return ((now - (now % 10)) + (offset * rt)) / rt
 }
 
@@ -218,7 +227,7 @@ func rehashRoutine(ctx context.Context, nftc *nftables.Conn, streams *Streams) {
 					logger.Fatalf("could not flush all routes for stream %s: %s", n, err)
 				}
 			}
-			logger.Infof("cleaning nftables mt6d table...\n")
+			logger.Infof("deleting nftables mt6d table...\n")
 			if err := nft.delete(); err != nil {
 				logger.Fatalf("could not delete mt6d table: %s\n", err)
 			}

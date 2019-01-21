@@ -38,6 +38,7 @@ func handleICMPPkt(p netfilter.NFPacket) {
 
 	//var newPkt []byte
 	icmpv6Pkt, _ := icmpv6Layer.(*layers.ICMPv6)
+	logger.Infof("ICMP typecode: %s\n", icmpv6Pkt.TypeCode.String())
 	if icmpv6Pkt.TypeCode.Type() == layers.ICMPv6TypeRouterAdvertisement {
 		// Generate new RA with reduced MTU and MAC of MT6D gateway (if any)
 		// We only need to set the MTU because we don't have a MT6D gateway

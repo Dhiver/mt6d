@@ -72,11 +72,12 @@ func initStreams() (*Streams, error) {
 	streams := make(Streams)
 
 	// Populate streams for each profile
-	nfqid := uint16(2) // netfilter queue ID 1 is for icmpv6 traffic
+	nfqid := uint16(3) // netfilter queue ID 2 is for outgoing traffic
 	for k, v := range profiles {
 		logger.Infof("init stream %s", k)
 		streams[k] = Stream{
-			Nfqid:      nfqid,
+			NfqOutID:   nfqid,
+			NfqInID:    nfqid + 1,
 			SrcIPAddr:  hostnames[v.SrcHost],
 			SrcMAC:     ethers[hostnames[v.SrcHost].IP.String()],
 			DstIPAddr:  hostnames[v.DstHost],
@@ -87,7 +88,7 @@ func initStreams() (*Streams, error) {
 				Expired: list.New(),
 			},
 		}
-		nfqid++
+		nfqid += 2
 	}
 	return &streams, nil
 }

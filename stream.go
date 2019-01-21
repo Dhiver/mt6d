@@ -11,8 +11,8 @@ import (
 	"time"
 
 	netfilter "github.com/AkihiroSuda/go-netfilter-queue"
-	"github.com/google/gopacket/layers"
 	"github.com/google/logger"
+	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 )
 
@@ -20,7 +20,8 @@ type Route struct {
 	ObscuredSrcIPAddr net.IP
 	ObscuredDstIPAddr net.IP
 	ExpirationTime    time.Time
-	RuleHandle        uint64
+	NftRuleHandle     uint64
+	NftChain          *nftables.Chain
 }
 
 // IsExpired determines if the route is expired according to the UTC time
@@ -33,8 +34,8 @@ type Routes struct {
 	Expired *list.List
 }
 
-func (rs *Routes) Active() Route {
-	return rs.Head.Front().Next().Value.(Route)
+func (rs *Routes) Active() *Route {
+	return rs.Head.Front().Next().Value.(*Route)
 }
 
 func (rs *Routes) Dump() {
@@ -76,7 +77,8 @@ type Idkg struct {
 
 // A Stream represents an end-to-end MT6D connection between two hosts
 type Stream struct {
-	Nfqid      uint16
+	NfqOutID   uint16
+	NfqInID    uint16
 	SrcIPAddr  IP
 	SrcMAC     net.HardwareAddr
 	DstIPAddr  IP
@@ -87,8 +89,8 @@ type Stream struct {
 }
 
 func (s *Stream) Init(nlk netlink.Link, nft *nftMt6d) error {
-	// bind stream real dst addr to internal NIC
-	netlkAddr, err := netlink.ParseAddr(fmt.Sprintf("%s/64", s.DstIPAddr.IP.String()))
+	// bind stream real source addr to internal NIC
+	netlkAddr, err := netlink.ParseAddr(fmt.Sprintf("%s/64", s.SrcIPAddr.IP.String()))
 	if err != nil {
 		return err
 	}
@@ -96,18 +98,21 @@ func (s *Stream) Init(nlk netlink.Link, nft *nftMt6d) error {
 		return err
 	}
 
-	// creates permanent entry in the neighbor cache for the stream source IPv6 and MAC address
-	if err := netlink.NeighAdd(&netlink.Neigh{
-		LinkIndex:    nlk.Attrs().Index,
-		State:        netlink.NUD_PERMANENT,
-		IP:           s.SrcIPAddr.IP,
-		HardwareAddr: s.SrcMAC,
-		Family:       netlink.FAMILY_V6,
-	}); err != nil {
-		return err
-	}
+	/*
+		// creates permanent entry in the neighbor cache for the stream source IPv6 and MAC address (if MT6D gateway)
+		if err := netlink.NeighAdd(&netlink.Neigh{
+			LinkIndex:    extIfce.Index, // set external interface index
+			State:        netlink.NUD_PERMANENT,
+			IP:           s.DstIPAddr.IP, // set dst obsc IP addr
+			HardwareAddr: s.DstMAC, // set dst obsc MAC addr
+			Family:       netlink.FAMILY_V6,
+		}); err != nil {
+			return err
+		}
+	*/
 
-	return nft.redirectToQ(s.SrcIPAddr.IP, s.DstIPAddr.IP, s.Nfqid)
+	// redirect outbound traffic to queue
+	return nft.redirectToQ(s.SrcIPAddr.IP, s.DstIPAddr.IP, s.NfqOutID, nft.outputChain)
 }
 
 func (s *Stream) CleanOldRoutes(extNlk netlink.Link, nft *nftMt6d) error {
@@ -118,8 +123,8 @@ func (s *Stream) CleanOldRoutes(extNlk netlink.Link, nft *nftMt6d) error {
 		r := e.Value.(*Route)
 		logger.Infof("This route is expired and to be removed: %+v\n", r)
 
-		logger.Infof("Deleting rule via handle num %d\n", r.RuleHandle)
-		if err := nft.deleteRule(r.RuleHandle); err != nil {
+		logger.Infof("Deleting rule via handle num %d with chain: %s\n", r.NftRuleHandle, r.NftChain.Name)
+		if err := nft.deleteRule(r.NftRuleHandle, r.NftChain); err != nil {
 			return err
 		}
 		// unbind addr from interface
@@ -170,7 +175,8 @@ func (s *Stream) Mutate(inNlk, extNlk netlink.Link, nft *nftMt6d, salt, rt int64
 		ObscuredSrcIPAddr: obsSrc,
 		ObscuredDstIPAddr: obsDst,
 		ExpirationTime:    time.Now().UTC().Add(time.Duration(rt) * time.Second),
-		RuleHandle:        RuleHandleNum,
+		NftRuleHandle:     RuleHandleNum,
+		NftChain:          nft.inputChain,
 	}
 
 	logger.Infof("New route: %+v\n", *newRoute)
@@ -188,7 +194,7 @@ func (s *Stream) Mutate(inNlk, extNlk netlink.Link, nft *nftMt6d, salt, rt int64
 	}
 
 	// Add route nftables rule to direct route traffic into netfilter queue
-	return nft.redirectToQ(obsDst, obsSrc, s.Nfqid)
+	return nft.redirectToQ(obsDst, obsSrc, s.NfqInID, nft.inputChain)
 }
 
 // Streams is a map of Stream. The index is the name of the stream
@@ -199,24 +205,34 @@ func (s *Stream) Handle(ctx context.Context) {
 
 	// TODO: Init structs
 	// TODO: Open UDP socket for external comms
-	// TODO: Bind to netfilter queue
 
-	streamNfq, err := netfilter.NewNFQueue(s.Nfqid, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
+	inNfq, err := netfilter.NewNFQueue(s.NfqInID, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
 	if err != nil {
 		logger.Fatalf("could not get netfilter queue: %s", err)
 	}
-	//defer streamNfq.Close() // Doesn't return.... ?
+	//defer inNfq.Close() // Doesn't return.... ?
 
-	pkts := streamNfq.GetPackets()
+	inPkts := inNfq.GetPackets()
+
+	outNfq, err := netfilter.NewNFQueue(s.NfqOutID, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
+	if err != nil {
+		logger.Fatalf("could not get netfilter queue: %s", err)
+	}
+	//defer outNfq.Close() // Doesn't return.... ?
+
+	outPkts := outNfq.GetPackets()
 
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Infof("Exiting stream routine\n")
 			return
-		case p := <-pkts:
-			handleStreamPkt(p, s)
+		case p := <-inPkts:
+			handleInPkt(p, s)
+		case p := <-outPkts:
+			handleOutPkt(p, s)
 		}
+
 	}
 
 }
@@ -232,39 +248,70 @@ func (s *Stream) Flush(extNlk netlink.Link, nft *nftMt6d) error {
 	return s.CleanOldRoutes(extNlk, nft)
 }
 
-func handleStreamPkt(p netfilter.NFPacket, s *Stream) {
-	// TODO: determine the direction of the packet
-	ip6Layer := p.Packet.Layer(layers.LayerTypeIPv6)
-	if ip6Layer == nil {
-		p.SetVerdict(netfilter.NF_DROP)
+func handleOutPkt(p netfilter.NFPacket, s *Stream) { // from internal, encaps and send to external
+	logger.Infof("OUT Pkt in queue: %v\n", p.Packet)
+	p.SetVerdict(netfilter.NF_DROP)
+
+	currentRoute := s.Routes.Active()
+
+	srcUDPAddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[%s]:2345", currentRoute.ObscuredSrcIPAddr.String()))
+	if err != nil {
+		logger.Fatalf("could not parse UDP addr: %s", err)
+	}
+	dstUDPAddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[%s]:6789", currentRoute.ObscuredDstIPAddr.String()))
+	if err != nil {
+		logger.Fatalf("could not parse UDP addr: %s", err)
+	}
+	conn, err := net.DialUDP("udp6", srcUDPAddr, dstUDPAddr)
+	if err != nil {
+		logger.Fatalf("could not dial udp: %s", err)
+	}
+	defer conn.Close()
+
+	// TODO: Remove IP addresses from payload (set to 0 for now)
+
+	// Set IPs to zero in the payload
+	n, err := conn.Write(p.Packet.ApplicationLayer().Payload())
+	if err != nil {
+		logger.Fatalf("error while writing: %s", err)
+	}
+	logger.Infof("I wrote n=%d, err=%v\n", n, err)
+}
+
+func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and send to internal
+	logger.Infof("IN Pkt in queue: %v\n", p.Packet)
+	p.SetVerdict(netfilter.NF_DROP)
+
+	// TODO: handle NS, we can avoid it by netlink.NeighAdd() for dst obscured addr on each new route
+
+	// TODO: if no UDP layer / application layer -> drop
+
+	appLayer := p.Packet.ApplicationLayer()
+	if appLayer == nil {
 		return
 	}
-	ip6Pkt, _ := ip6Layer.(*layers.IPv6)
 
-	if ip6Pkt.SrcIP.Equal(s.SrcIPAddr.IP) && ip6Pkt.DstIP.Equal(s.DstIPAddr.IP) { // inbound
-		logger.Infof("Inbound traffic from %s to %s\n", ip6Pkt.SrcIP.String(), ip6Pkt.DstIP.String())
-		logger.Infof("Packet is: %v", p.Packet)
+	/*
 		// Check packet size to see if > MT6D MTU
 		if p.Packet.Metadata().Length > MTU {
 			// TODO: Send ICMPv6 "too big message"
 
+			return
+		}
+	*/
+
+	payload := p.Packet.ApplicationLayer().Payload()
+	logger.Infof("I received: %s\n", string(payload))
+
+	/*
+		ip6Layer := p.Packet.Layer(layers.LayerTypeIPv6)
+		if ip6Layer == nil {
 			p.SetVerdict(netfilter.NF_DROP)
 			return
 		}
+		ip6Pkt, _ := ip6Layer.(*layers.IPv6)
 
-		// TODO: decaps and send to internal interface
-		//payload := p.Packet.ApplicationLayer()
+	*/
 
-		// - TODO: decode packet
-		// - TODO: send
-		//n, err := intIfce.Write()
-	} else { // outbound
-		logger.Infof("Outbound traffic from %s to %s\n", ip6Pkt.SrcIP.String(), ip6Pkt.DstIP.String())
-		logger.Infof("Packet is: %v", p.Packet)
-		// TODO: encaps and send to external interface
-	}
-
-	p.SetVerdict(netfilter.NF_DROP)
-	//newPkt := []byte{}
-	//p.SetVerdictWithPacket(netfilter.NF_ACCEPT, newPkt)
+	//intIfce.Write(payload)
 }
