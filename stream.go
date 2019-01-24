@@ -243,7 +243,7 @@ func (s *Stream) Handle(ctx context.Context) {
 	}
 }
 
-// Flush clean all routes. There expiration time is set to 0 and CleanOldRoutes is called.
+// Flush cleans all routes. There expiration time is set to 0 and CleanOldRoutes is called.
 func (s *Stream) Flush(extNlk netlink.Link, nft *nftMt6d) error {
 	// Set all active route expiration time to 0
 	for e := s.Routes.Head.Back(); e != nil; e = e.Prev() {
@@ -274,10 +274,33 @@ func handleOutPkt(p netfilter.NFPacket, s *Stream) { // from internal, encaps an
 	}
 	defer conn.Close()
 
-	// TODO: Remove IP addresses from payload (set to 0 for now)
+	// Remove IP addresses from payload (set to 0 for now)
+	origIPLayer := p.Packet.Layer(layers.LayerTypeIPv6)
+	if origIPLayer == nil {
+		return
+	}
+	ip, _ := origIPLayer.(*layers.IPv6)
 
-	// Set IPs to zero in the payload
-	if _, err = conn.Write(p.Packet.Data()); err != nil {
+	newIPLayer := &layers.IPv6{
+		SrcIP:      net.IPv6zero,
+		DstIP:      net.IPv6zero,
+		Version:    6,
+		HopLimit:   64,
+		NextHeader: ip.NextHeader,
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buffer, serializeOptions,
+		newIPLayer,
+		gopacket.Payload(ip.Payload)); err != nil {
+		logger.Fatalf("could not serialize new packet: %s", err)
+	}
+
+	payload := buffer.Bytes()
+
+	//payload := p.Packet.Data()
+
+	if _, err = conn.Write(payload); err != nil {
 		logger.Errorf("error while writing: %s", err)
 	}
 }
@@ -318,17 +341,32 @@ func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and
 	decapsPkt := gopacket.NewPacket(payload, layers.LayerTypeIPv6, gopacket.Default)
 	logger.Infof("I received PKT: %v\n", decapsPkt)
 
-	/*
-		ip6Layer := p.Packet.Layer(layers.LayerTypeIPv6)
-		if ip6Layer == nil {
-			p.SetVerdict(netfilter.NF_DROP)
-			return
-		}
-		ip6Pkt, _ := ip6Layer.(*layers.IPv6)
+	// set real IPs in IPv6 layer
 
-	*/
+	ip6Layer := decapsPkt.Layer(layers.LayerTypeIPv6)
+	if ip6Layer == nil {
+		return
+	}
+	ip, _ := ip6Layer.(*layers.IPv6)
 
-	if _, err := intIfce.Write(payload); err != nil {
+	newIPLayer := &layers.IPv6{
+		SrcIP:      s.DstIPAddr.IP,
+		DstIP:      s.SrcIPAddr.IP,
+		Version:    6,
+		HopLimit:   64,
+		NextHeader: ip.NextHeader,
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buffer, serializeOptions,
+		newIPLayer,
+		gopacket.Payload(ip.Payload)); err != nil {
+		logger.Fatalf("could not serialize new packet: %s", err)
+	}
+
+	payload2 := buffer.Bytes()
+
+	if _, err := intIfce.Write(payload2); err != nil {
 		logger.Errorf("error while writing: %s", err)
 	}
 }
