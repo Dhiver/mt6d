@@ -193,7 +193,7 @@ func rehashRoutine(ctx context.Context, nftc *nftables.Conn, streams *Streams) {
 	for {
 
 		salt := computeSalt(rotationTime, offset)
-		offset++ // Hum... if two MT6D program don't start at the same time, they will generate different addresses ?
+		offset++ // Hum... if two MT6D program don't start at the same time interval, they will generate different addresses ?
 		fmt.Printf("Current salt is %d\n", salt)
 
 		for sn, s := range *streams {

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	netfilter "github.com/AkihiroSuda/go-netfilter-queue"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/google/logger"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
@@ -35,7 +37,11 @@ type Routes struct {
 }
 
 func (rs *Routes) Active() *Route {
-	return rs.Head.Front().Next().Value.(*Route)
+	fe := rs.Head.Front()
+	if fe.Next() != nil {
+		return fe.Next().Value.(*Route)
+	}
+	return fe.Value.(*Route)
 }
 
 func (rs *Routes) Dump() {
@@ -101,17 +107,17 @@ func (s *Stream) Init(nlk netlink.Link, nft *nftMt6d) error {
 	/*
 		// creates permanent entry in the neighbor cache for the stream source IPv6 and MAC address (if MT6D gateway)
 		if err := netlink.NeighAdd(&netlink.Neigh{
-			LinkIndex:    extIfce.Index, // set external interface index
+			LinkIndex:    nlk.Attrs().Index, // set internal interface index
 			State:        netlink.NUD_PERMANENT,
-			IP:           s.DstIPAddr.IP, // set dst obsc IP addr
-			HardwareAddr: s.DstMAC, // set dst obsc MAC addr
+			IP:           s.DstIPAddr.IP, // set real dst IP addr
+			HardwareAddr: s.DstMAC,       // set real dst MAC addr
 			Family:       netlink.FAMILY_V6,
 		}); err != nil {
 			return err
 		}
 	*/
 
-	// redirect outbound traffic to queue
+	// redirect outbound traffic to specific queue
 	return nft.redirectToQ(s.SrcIPAddr.IP, s.DstIPAddr.IP, s.NfqOutID, nft.outputChain)
 }
 
@@ -174,7 +180,7 @@ func (s *Stream) Mutate(inNlk, extNlk netlink.Link, nft *nftMt6d, salt, rt int64
 	newRoute := &Route{
 		ObscuredSrcIPAddr: obsSrc,
 		ObscuredDstIPAddr: obsDst,
-		ExpirationTime:    time.Now().UTC().Add(time.Duration(rt) * time.Second),
+		ExpirationTime:    time.Now().UTC().Add(time.Duration(config.GetInt("addresslifetime")) * time.Second),
 		NftRuleHandle:     RuleHandleNum,
 		NftChain:          nft.inputChain,
 	}
@@ -206,6 +212,7 @@ func (s *Stream) Handle(ctx context.Context) {
 	// TODO: Init structs
 	// TODO: Open UDP socket for external comms
 
+	logger.Infof("OUT is on queue ID: %d\n", s.NfqInID)
 	inNfq, err := netfilter.NewNFQueue(s.NfqInID, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
 	if err != nil {
 		logger.Fatalf("could not get netfilter queue: %s", err)
@@ -214,6 +221,7 @@ func (s *Stream) Handle(ctx context.Context) {
 
 	inPkts := inNfq.GetPackets()
 
+	logger.Infof("IN is on queue ID: %d\n", s.NfqOutID)
 	outNfq, err := netfilter.NewNFQueue(s.NfqOutID, 100, netfilter.NF_DEFAULT_PACKET_SIZE)
 	if err != nil {
 		logger.Fatalf("could not get netfilter queue: %s", err)
@@ -228,13 +236,11 @@ func (s *Stream) Handle(ctx context.Context) {
 			logger.Infof("Exiting stream routine\n")
 			return
 		case p := <-inPkts:
-			handleInPkt(p, s)
+			go handleInPkt(p, s)
 		case p := <-outPkts:
-			handleOutPkt(p, s)
+			go handleOutPkt(p, s)
 		}
-
 	}
-
 }
 
 // Flush clean all routes. There expiration time is set to 0 and CleanOldRoutes is called.
@@ -271,18 +277,26 @@ func handleOutPkt(p netfilter.NFPacket, s *Stream) { // from internal, encaps an
 	// TODO: Remove IP addresses from payload (set to 0 for now)
 
 	// Set IPs to zero in the payload
-	n, err := conn.Write(p.Packet.ApplicationLayer().Payload())
-	if err != nil {
-		logger.Fatalf("error while writing: %s", err)
+	if _, err = conn.Write(p.Packet.Data()); err != nil {
+		logger.Errorf("error while writing: %s", err)
 	}
-	logger.Infof("I wrote n=%d, err=%v\n", n, err)
 }
 
 func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and send to internal
 	logger.Infof("IN Pkt in queue: %v\n", p.Packet)
+
+	icmpv6Layer := p.Packet.Layer(layers.LayerTypeICMPv6)
+	if icmpv6Layer != nil {
+		icmpv6Pkt, _ := icmpv6Layer.(*layers.ICMPv6)
+		logger.Infof("accept ICMP typecode: %s\n", icmpv6Pkt.TypeCode.String())
+		if icmpv6Pkt.TypeCode.Type() == layers.ICMPv6TypeNeighborSolicitation || icmpv6Pkt.TypeCode.Type() == layers.ICMPv6TypeNeighborAdvertisement {
+			p.SetVerdict(netfilter.NF_ACCEPT)
+			return
+		}
+	}
 	p.SetVerdict(netfilter.NF_DROP)
 
-	// TODO: handle NS, we can avoid it by netlink.NeighAdd() for dst obscured addr on each new route
+	// TODO: handle NS, we can avoid it by netlink.NeighAdd() for dst obscured addr on each new route ?
 
 	// TODO: if no UDP layer / application layer -> drop
 
@@ -301,7 +315,8 @@ func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and
 	*/
 
 	payload := p.Packet.ApplicationLayer().Payload()
-	logger.Infof("I received: %s\n", string(payload))
+	decapsPkt := gopacket.NewPacket(payload, layers.LayerTypeIPv6, gopacket.Default)
+	logger.Infof("I received PKT: %v\n", decapsPkt)
 
 	/*
 		ip6Layer := p.Packet.Layer(layers.LayerTypeIPv6)
@@ -313,5 +328,7 @@ func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and
 
 	*/
 
-	//intIfce.Write(payload)
+	if _, err := intIfce.Write(payload); err != nil {
+		logger.Errorf("error while writing: %s", err)
+	}
 }

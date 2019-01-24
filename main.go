@@ -135,7 +135,7 @@ func main() {
 
 	// Open internal interface
 	wconfig := water.Config{
-		DeviceType: water.TAP,
+		DeviceType: water.TUN,
 	}
 	wconfig.Name = config.GetString("internalnic")
 

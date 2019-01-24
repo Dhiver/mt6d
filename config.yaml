@@ -20,6 +20,7 @@ hostnames:
 internalNic: tun42
 rotationTime: 10
 externalNic: enp0s3
+addressLifetime: 12
 
 # unused for now
 hashAlgorithm: sha256
