@@ -180,6 +180,7 @@ func icmpRoutine(ctx context.Context) {
 	if err != nil {
 		logger.Fatalf("could not get netfilter queue: %s", err)
 	}
+
 	//defer icmpNfq.Close() // Doesn't return....
 
 	icmpPkts := icmpNfq.GetPackets()

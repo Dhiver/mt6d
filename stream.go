@@ -38,6 +38,9 @@ type Routes struct {
 
 func (rs *Routes) Active() *Route {
 	fe := rs.Head.Front()
+	if fe == nil {
+		return nil
+	}
 	if fe.Next() != nil {
 		return fe.Next().Value.(*Route)
 	}

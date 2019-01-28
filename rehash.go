@@ -14,10 +14,10 @@ import (
 )
 
 var (
-	// RuleHandleNum maintains a global counter in order to identify the next rule handle number that will be assigned to the next rule
-	// Each time that a rule is inserted, this variable must be incremented
-	// Yes, this can be improved, but the package github.com/google/nftables needs to be improved for that (we should be able to get the rule handle after insertion)
-	RuleHandleNum = uint64(3)
+	// RuleHandleNum maintains a global counter in order to identify the next rule handle number that can be assigned.
+	// Each time that a rule is inserted, this variable must be incremented.
+	// Yes, this can be improved, but the package github.com/google/nftables needs to be improved for that (we should be able to get the rule handle after insertion).
+	RuleHandleNum = uint64(1)
 )
 
 type nftMt6d struct {
@@ -46,6 +46,7 @@ func newNftMt6d(nftc *nftables.Conn) (*nftMt6d, error) {
 		Hooknum:  nftables.ChainHookOutput,
 		Type:     nftables.ChainTypeFilter,
 	})
+	RuleHandleNum += 2 // input/output chains
 	return &nftMt6d{
 		conn:        nftc,
 		table:       table,

@@ -72,7 +72,7 @@ func initStreams() (*Streams, error) {
 	streams := make(Streams)
 
 	// Populate streams for each profile
-	nfqid := uint16(3) // netfilter queue ID 2 is for outgoing traffic
+	nfqid := uint16(2) // netfilter queue ID 1 is for ICMP traffic
 	for k, v := range profiles {
 		logger.Infof("init stream %s", k)
 		streams[k] = Stream{
