@@ -7,7 +7,7 @@ profiles:
   home:
     srcHost: vm
     dstHost: rasp
-    sessionKey: aGV5IHRoZXJlIQ==
+    sessionKey: HcicQW1mAwAsrR/V2zq8/H/fVc0wxLiTshCWm3rFoCw=
 
 ethers:
   2a01:aaaa:aaaa:aaaa::1: 42:42:42:42:42:42
@@ -21,6 +21,7 @@ internalNic: tun42
 rotationTime: 10
 externalNic: enp0s3
 addressLifetime: 12
+encryption: false
 
 # unused for now
 hashAlgorithm: sha256
@@ -28,5 +29,4 @@ cryptAlgorithm: aes256
 regenInterval: 1000
 regenWindow: 500
 firewall: true
-encryption: false
 randSource: ""

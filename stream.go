@@ -18,6 +18,10 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+const (
+	MT6DOptionTypeEncryption = uint8(219)
+)
+
 type Route struct {
 	ObscuredSrcIPAddr net.IP
 	ObscuredDstIPAddr net.IP
@@ -283,9 +287,19 @@ func handleOutPkt(p netfilter.NFPacket, s *Stream) { // from internal, encaps an
 	}
 	ip, _ := origIPLayer.(*layers.IPv6)
 
+	isEncryptionEnabled := config.GetBool("encryption")
+
 	// Remove IP addresses from payload
 	truncatedHeader := ip.LayerContents()[:8] // only keep the first 8 bytes of the original IPv6 header
 	payload := append(truncatedHeader, ip.Payload...)
+
+	if isEncryptionEnabled {
+
+		payload, err = encrypt(s.SessionKey, payload)
+		if err != nil {
+			logger.Fatalf("could not encrypt packet: %s", err)
+		}
+	}
 
 	if _, err = conn.Write(payload); err != nil {
 		logger.Errorf("error while writing: %s", err)
@@ -325,6 +339,15 @@ func handleInPkt(p netfilter.NFPacket, s *Stream) { // from external, decaps and
 	*/
 
 	payload := appLayer.Payload()
+
+	var err error
+	isEncryptionEnabled := config.GetBool("encryption")
+	if isEncryptionEnabled {
+		payload, err = decrypt(s.SessionKey, payload)
+		if err != nil {
+			logger.Fatalf("could not decrypt packet: %s", err)
+		}
+	}
 
 	// Reconstruct truncated pkt
 	var buf bytes.Buffer

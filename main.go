@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -24,9 +25,10 @@ const (
 )
 
 var (
-	wg      sync.WaitGroup
-	config  *viper.Viper
-	intIfce *water.Interface
+	wg         sync.WaitGroup
+	config     *viper.Viper
+	intIfce    *water.Interface
+	ErrKeySize = errors.New("the key size must be 32 bytes")
 
 	MTU = 1400
 )
@@ -39,6 +41,9 @@ func initStreams() (*Streams, error) {
 		sk, err := base64.StdEncoding.DecodeString(c["sessionkey"])
 		if err != nil {
 			return nil, err
+		}
+		if len(sk) != 32 {
+			return nil, ErrKeySize
 		}
 		profiles[k] = Profile{
 			SrcHost:    c["srchost"],
